@@ -1,0 +1,75 @@
+{
+  "name": "@argszero/dsh-mcp-schema-normalizer",
+  "description": "A tool parameter declared with a type list ([\"boolean\",\"string\"]), an `anyOf` or a `oneOf` is legal JSON Schema, and third-party MCP servers publish them — a code-search server declaring `anyOf [array|string, null]` on its main parameters is the reported example. A model that reduces a union to its first member (the report's is Gemini) can then never fill the parameter with the others, so a string parameter accepts only a boolean. Our own tools are ours to fix at the source; a server's `inputSchema` is not — `createMcpToolDefinition` hands it to the registry unchanged. This plugin shadows `register` on the tools service instance, the one seam a caller that reaches the registry by name lookup is seen at, and narrows a selected definition's `parameters` to one type per node before the registration is forwarded: type lists lose `null` and reduce by a preference order, `anyOf`/`oneOf` lose their null branches, and a union whose remaining branches are all objects merges into one. Arguments are never touched — the server still validates what it accepts. `observe` mode reports what `normalize` would change without changing it; the snapshot reports the rules that fired, the servers the configuration never matched, and the MCP tools that were already registered when the shadow went in. Zero runtime dependencies, fail-open, no sandbox changes.",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/argszero/dsh-mcp-schema-normalizer.git"
+  },
+  "homepage": "https://github.com/argszero/dsh-mcp-schema-normalizer#readme",
+  "bugs": {
+    "url": "https://github.com/argszero/dsh-mcp-schema-normalizer/issues"
+  },
+  "keywords": [
+    "cordis",
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "mcp",
+    "model-context-protocol",
+    "tools",
+    "json-schema",
+    "schema-normalization",
+    "gemini",
+    "union-types"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2 || >=4.0.5-alpha.1 <5",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.1 || >=0.2.1-alpha.2 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-scope": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@types/node": "^24.19.1",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "tsc",
+    "pretest": "tsc",
+    "test": "node --test \"test/*.spec.mjs\"",
+    "test:inject": "node scripts/inject-defects.mjs",
+    "probe:lines": "bash scripts/probe-lines.sh",
+    "prepublishOnly": "tsc"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  }
+}

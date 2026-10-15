@@ -1,0 +1,172 @@
+# @argszero/dsh-mcp-schema-normalizer
+
+A DeepSeek Harness plugin that narrows **union-typed MCP tool parameter schemas**
+to one type per node, at registration, before the model ever sees them.
+
+---
+
+## The gap
+
+A tool parameter may legally be declared with a `type` list, an `anyOf` or a
+`oneOf`:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": { "anyOf": [ { "type": "array", "items": { "type": "string" } },
+                          { "type": "string" },
+                          { "type": "null" } ] },
+    "regex": { "type": ["boolean", "string"] }
+  }
+}
+```
+
+Third-party MCP servers publish exactly this. The upstream report measured a
+code-search server doing it on its main parameters and read the last request
+header of 702 sessions (216 distinct tools) to size the problem — and the model
+in that deployment was Gemini.
+
+**A model that reduces a union to its first member cannot fill the parameter
+with the others.** `["boolean","string"]` becomes a parameter that is a boolean
+and nothing else: no caller can send a string to it, no matter how plainly the
+call needs one.
+
+Our own tools are ours to correct at the source. An MCP server's `inputSchema`
+is not:
+
+```ts
+// packages/mcp/mcp-client/src/tools.ts — the server's schema goes onto the
+// definition uncompiled, and syncTools() registers that definition as it is.
+return createMcpToolDefinition(ctx, { inputSchema: tool.inputSchema, ... })
+```
+
+## What this plugin does
+
+It shadows `register` on the **tools service instance** — the one seam that a
+caller reaching the registry by name lookup (`ctx.tools.register(...)`) passes
+through — and rewrites a selected definition's `parameters` before forwarding the
+registration. Every reader of the registry, the model included, then sees the
+narrowed schema.
+
+The rules, as run in the report's production deployment:
+
+| rule | what happens |
+|---|---|
+| `narrow-type-list` | A `type` list loses `"null"`. One survivor becomes the node's `type`; several survivors are reduced by the preference order (`string`, `array`, `object`, `number`, `integer`, `boolean`). |
+| `drop-null-branch` | An `anyOf`/`oneOf` loses its null-only branches. |
+| `drop-empty-union` | A union with nothing left is removed from the node, so the node accepts what its other keywords allow instead of accepting nothing. |
+| `merge-object-branches` | A union whose remaining branches are *all* objects becomes one object node: the union of `properties`, the intersection of `required`. |
+
+**The arguments sent to the server are never touched.** Narrowing the schema
+tells the model what it may send; the server still validates the call against
+what it accepts, which is a superset of the narrowed schema.
+
+## Install
+
+```sh
+dsh plugin --profile <name> add @argszero/dsh-mcp-schema-normalizer
+```
+
+The package declares `dsh.bundle`, so `dsh` also appends it to
+`dsh.profile.bundles` and the row activates on the next boot. **List the
+normalizer before the row that connects your MCP servers** — a row mounted after
+`mcp-client` cannot re-register tools another plugin already registered, and the
+mount will say so (see *Honesty* below).
+
+## Configure
+
+```yaml
+- insert:
+    - id: mcp-schema-normalizer
+      name: '@argszero/dsh-mcp-schema-normalizer'
+      config:
+        mode: normalize          # normalize | observe | off
+        servers: [github]        # omit for every mcp__* tool
+        prefer: [string, array, object, number, integer, boolean]
+        nullBranches: true
+        mergeObjectBranches: true
+        report: true
+```
+
+- **`mode`** — `normalize` (default) rewrites a selected schema before it is
+  registered. `observe` registers the server's own schema untouched and reports
+  what `normalize` *would* have changed; mount this first, because it answers
+  "what would this do on *this* deployment's servers?" with your servers rather
+  than this README's example. `off` mounts nothing: no shadow, no service, no
+  counters.
+- **`servers`** — the `mcp-client` `serverName`s to narrow. **Omitted or empty
+  means every `mcp__*` tool**, deliberately the opposite default from the
+  neighbouring `@argszero/dsh-mcp-tool-filter`: that plugin restricts a
+  deployment's *own* tool budget, while the defect this one repairs lives in
+  *third-party* schemas the deployment never wrote. A name that never appears is
+  reported in the snapshot's coverage rather than treated as an error — which
+  servers connect is discovered at run time, from something this plugin never
+  talks to.
+- **`prefer`** — the order a surviving `type` list is reduced by. Names outside
+  the JSON Schema vocabulary are ignored, not honoured, so a typo cannot make a
+  list reduce to a type no validator knows; the fallback is reported.
+- **`nullBranches`**, **`mergeObjectBranches`** — each rule's off switch.
+
+## The snapshot
+
+The plugin provides a `mcpSchemaNormalizer` service:
+
+```ts
+ctx.mcpSchemaNormalizer.snapshot()
+// { patched, mode, counters, rules, changes, coverage }
+ctx.mcpSchemaNormalizer.reset()
+```
+
+- `counters` — `seen`, `narrowed`, `unchanged`, `unreadable`, `notSelected`,
+  `failed`, `changes`, `unionButUnchanged`. The last one is worth watching: it
+  counts registrations that carried a union-shaped schema **which no rule
+  matched** — a shape the deployment has but the rule set does not cover.
+- `rules` — how many times each of the four rules fired.
+- `changes` — the first 50 narrowed registrations, each with its tool name, the
+  server it was attributed to, and the per-node changes.
+- `coverage.serverLimited` — whether `servers` narrowed anything at all.
+
+## Honesty
+
+Read this before switching it on.
+
+- **`mergeObjectBranches` loosens the node.** The merge keeps a branch's
+  `properties` union and `required` intersection, and keeps
+  `additionalProperties` only when every branch agreed on it. Anything else a
+  branch carried — `patternProperties`, `unevaluatedProperties`, a nested
+  `not` — is dropped, and a dropped restriction is a schema that admits *more*
+  than the server's. The per-node change report shows every merge, so `observe`
+  mode answers this on your own servers before it is armed.
+- **Narrowing `["boolean","string"]` to `string` makes a boolean invalid** where
+  the server would have accepted it. That is the trade the report's deployment
+  made, and it is why the preference order is configurable rather than fixed.
+- **A tool registered before the mount is not covered.** The mount lists those
+  tools in `coverage.preExisting` and warns with the count. A plugin cannot
+  re-register another plugin's tools; list the normalizer first.
+- **It rewrites what the model is *told*, not what the server accepts.** If a
+  model fills a narrowed field with a value the server rejects, the server's
+  validation is still the authority.
+- **It never throws into a registration.** A schema it cannot read as a plain
+  JSON object is forwarded unchanged and counted as `unreadable`; a narrowing
+  that throws is forwarded unchanged and counted as `failed`.
+- **It does not mutate the schema it was handed.** The server's own object is
+  left intact; the caller gets a copy.
+
+## Compatibility
+
+- Peer dependencies: `@deepseek-ai/cordis` (`^4.0.2 || >=4.0.5-alpha.1 <5`) and
+  `@deepseek-ai/dsh-tools` (`>=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.1 ||
+  >=0.2.1-alpha.2 <0.3.0`).
+- **One seam, shared with `@argszero/dsh-mcp-tool-filter`.** That plugin decides
+  *whether* a tool is registered; this one decides *what schema* it is registered
+  with. Two plugins on one seam must chain, and this one does: the wrapper
+  captures the `register` it found at mount and calls that, rather than reading
+  `ctx.tools.register` again — which would be this plugin calling itself.
+  Unmount restores the captured function only when this mount installed it as an
+  own property, so a plugin that mounted earlier keeps its shadow.
+- Zero runtime dependencies.
+
+## License
+
+MIT

@@ -1,0 +1,27 @@
+# The layer this bundle contributes: one row, the schema normalizer.
+#
+# Insert it *before* the row that connects your MCP servers, so the tools a
+# server registers are normalised as they arrive. A row that mounts afterwards
+# cannot re-register another plugin's tools — the mount reports the MCP tools
+# that were already there instead (see the README).
+- insert:
+    - id: mcp-schema-normalizer
+      name: '@argszero/dsh-mcp-schema-normalizer'
+      config:
+        # `normalize` (default) rewrites a selected schema before it is
+        # registered; `observe` registers it untouched and reports what
+        # `normalize` would have changed; `off` mounts nothing.
+        mode: normalize
+        # Omit `servers` to cover every `mcp__*` tool. Name servers to narrow
+        # only those (a `mcp-client` `serverName`, e.g. `github`).
+        # servers: [github]
+        # The preference order a surviving `type` list is reduced by. Names
+        # outside the JSON Schema vocabulary are ignored, not honoured.
+        # prefer: [string, array, object, number, integer, boolean]
+        # Drop `"null"` from a type list. Default true.
+        # nullBranches: true
+        # Merge an `anyOf`/`oneOf` whose remaining branches are all objects into
+        # one object node. Default true.
+        # mergeObjectBranches: true
+        # Log the mount, first-change and unmount summaries. Default true.
+        # report: true
