@@ -17,7 +17,12 @@
  * party, and `createMcpToolDefinition` hands it to the registry unchanged
  * (`parameters: inputSchema`).
  *
- * ## The rules, as run in the report's production deployment
+ * ## The rules this plugin implements, from the report's out-of-tree patch
+ *
+ * Two rules that patch also carries are deliberately absent: it picks one branch
+ * when a union is not all objects (this plugin leaves such a union and counts it
+ * as `unionButUnchanged`), and it drops `null` from `enum` (this plugin leaves
+ * `enum` alone). Both are stated in the README.
  *
  * - A `type` list loses `"null"`. If one type remains it becomes the node's
  *   `type`; if several remain, the first match in the preference order

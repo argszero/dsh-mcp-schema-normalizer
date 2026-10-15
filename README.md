@@ -49,7 +49,7 @@ through — and rewrites a selected definition's `parameters` before forwarding 
 registration. Every reader of the registry, the model included, then sees the
 narrowed schema.
 
-The rules, as run in the report's production deployment:
+The rules this plugin implements, taken from the report's out-of-tree patch:
 
 | rule | what happens |
 |---|---|
@@ -61,6 +61,19 @@ The rules, as run in the report's production deployment:
 **The arguments sent to the server are never touched.** Narrowing the schema
 tells the model what it may send; the server still validates the call against
 what it accepts, which is a superset of the narrowed schema.
+
+**Two rules the report's patch also carries are not implemented here**, and the
+difference is deliberate rather than an oversight:
+
+- *It picks one branch when a union is **not** all objects* (`anyOf: [{type:
+  "string"}, {type: "number"}]` becomes `string`). This plugin leaves such a
+  union alone and counts it as `counters.unionButUnchanged` instead. Picking
+  discards an alternative the server still accepts, so a model that needed the
+  number can no longer send one — a deployment whose schemas have such unions can
+  weigh that, and this plugin does not weigh it for them.
+- *It drops `null` from `enum`.* This plugin leaves `enum` untouched: a
+  `type`-list or union null is structural, while an `enum` member is a value the
+  server enumerated, and the report's own example does not need it.
 
 ## Install
 
