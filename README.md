@@ -49,7 +49,7 @@ through — and rewrites a selected definition's `parameters` before forwarding 
 registration. Every reader of the registry, the model included, then sees the
 narrowed schema.
 
-The rules this plugin implements, taken from the report's out-of-tree patch:
+The union rules, taken from the report's out-of-tree patch:
 
 | rule | what happens |
 |---|---|
@@ -58,9 +58,27 @@ The rules this plugin implements, taken from the report's out-of-tree patch:
 | `drop-empty-union` | A union with nothing left is removed from the node, so the node accepts what its other keywords allow instead of accepting nothing. |
 | `merge-object-branches` | A union whose remaining branches are *all* objects becomes one object node: the union of `properties`, the intersection of `required`. |
 
+The rules added in **0.2.0**, for the same provider's second and third rejection
+(`$ref`/`$defs`, and `additionalProperties`, each fail a whole request before any
+tool is called):
+
+| rule | what happens |
+|---|---|
+| `inline-ref` | A local `$ref` (`#/a/b`, `#/$defs/Name`, `#/definitions/Name`) is replaced by the subschema it points at. A keyword written beside `$ref` overrides the target. |
+| `prune-defs` | A `$defs`/`definitions` table that nothing outside it points into any more is removed: its declarations now sit where they are used, and the reported provider rejects the keyword itself. |
+| `drop-additional-properties` | The `additionalProperties` keyword is removed from the declaration, whichever shape it had. |
+
 **The arguments sent to the server are never touched.** Narrowing the schema
 tells the model what it may send; the server still validates the call against
 what it accepts, which is a superset of the narrowed schema.
+
+That is also why inlining a `$ref` is safe rather than a reinterpretation. A
+`ToolDefinition` carries no validator: `defineTool` closes validation inside the
+tool's own `execute`, and an MCP tool definition built from a server's
+`inputSchema` carries none at all, so **the MCP server validates its own
+arguments**. The declaration this plugin rewrites is read by exactly one party —
+the model — and an inlined `$ref` says the same thing to that reader as the
+reference did.
 
 **Two rules the report's patch also carries are not implemented here**, and the
 difference is deliberate rather than an oversight:
@@ -99,6 +117,8 @@ mount will say so (see *Honesty* below).
         prefer: [string, array, object, number, integer, boolean]
         nullBranches: true
         mergeObjectBranches: true
+        inlineRefs: true
+        additionalProperties: drop   # drop | keep
         report: true
 ```
 
@@ -120,6 +140,18 @@ mount will say so (see *Honesty* below).
   the JSON Schema vocabulary are ignored, not honoured, so a typo cannot make a
   list reduce to a type no validator knows; the fallback is reported.
 - **`nullBranches`**, **`mergeObjectBranches`** — each rule's off switch.
+- **`inlineRefs`** — whether a local `$ref` is replaced by the subschema it points
+  at, and a table nothing points into is pruned. Default `true`. An external URL,
+  a dangling pointer and a cycle are each left exactly as the server wrote it and
+  named in `snapshot().unresolvedRefs`; the pass is bounded by a depth limit and
+  by an expansion budget, so a schema that references itself cannot blow up the
+  registration.
+- **`additionalProperties`** — `drop` (default) or `keep`. On the reported
+  provider one `additionalProperties` keyword in a tool declaration fails every
+  request with HTTP 400 `INVALID_ARGUMENT`, so a server that closes its objects
+  makes the session unusable; dropping it is the only repair a plugin can make.
+  `keep` exists for a deployment whose provider accepts the keyword and whose
+  models are better served by knowing the object is closed.
 
 ## The snapshot
 
@@ -135,7 +167,10 @@ ctx.mcpSchemaNormalizer.reset()
   `failed`, `changes`, `unionButUnchanged`. The last one is worth watching: it
   counts registrations that carried a union-shaped schema **which no rule
   matched** — a shape the deployment has but the rule set does not cover.
-- `rules` — how many times each of the four rules fired.
+- `rules` — how many times each rule fired (seven in 0.2.0).
+- `unresolvedRefs` — every `$ref` the registered declaration still carries:
+  external URLs, dangling pointers, cycles, and everything past the expansion
+  budget. Non-empty means a declaration this plugin could not repair, named.
 - `changes` — the first 50 narrowed registrations, each with its tool name, the
   server it was attributed to, and the per-node changes.
 - `coverage.serverLimited` — whether `servers` narrowed anything at all.
@@ -163,6 +198,21 @@ Read this before switching it on.
 - **It never throws into a registration.** A schema it cannot read as a plain
   JSON object is forwarded unchanged and counted as `unreadable`; a narrowing
   that throws is forwarded unchanged and counted as `failed`.
+- **Dropping `additionalProperties` is a trade, and the trade is worth naming.**
+  On the provider that rejects the keyword, keeping it means *every* request in
+  the session fails with HTTP 400 before any tool is called — the session is
+  unusable. Dropping it means requests go through and a model that fills the
+  object with a key the server did not declare gets an ordinary tool-level error
+  for that one call. The failure moves from "nothing works" to "this call was
+  wrong", which is why `drop` is the default; `keep` exists for a provider that
+  accepts the keyword.
+- **`inline-ref` only inlines a reference it can resolve offline.** An `http(s)`
+  URL, a pointer into a document this plugin was not given, a cycle and anything
+  past the expansion budget are left exactly as the server wrote them and named
+  in `snapshot().unresolvedRefs` — the plugin has no network access and does not
+  invent a target. If the provider rejects an unresolvable `$ref` too, that
+  declaration cannot be repaired here and `unresolvedRefs` is the list to take
+  to the server's author.
 - **It does not mutate the schema it was handed.** The server's own object is
   left intact; the caller gets a copy.
 
