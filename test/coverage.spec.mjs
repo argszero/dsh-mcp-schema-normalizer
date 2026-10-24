@@ -226,7 +226,13 @@ test('reset zeroes the counters, the rules and the log, and keeps the shadow', a
   service(harness).reset()
   const after = service(harness).snapshot()
   assert.deepEqual(after.rules, {
-    'narrow-type-list': 0, 'drop-null-branch': 0, 'drop-empty-union': 0, 'merge-object-branches': 0,
+    'narrow-type-list': 0,
+    'drop-null-branch': 0,
+    'drop-empty-union': 0,
+    'merge-object-branches': 0,
+    'inline-ref': 0,
+    'prune-defs': 0,
+    'drop-additional-properties': 0,
   })
   assert.equal(after.counters.changes, 0)
   assert.equal(after.counters.seen, 0)

@@ -64,6 +64,12 @@ export type Rule =
   | 'drop-empty-union'
   /** An `anyOf`/`oneOf` of objects became a single object node. */
   | 'merge-object-branches'
+  /** A local `$ref` was replaced by the subschema it points at. */
+  | 'inline-ref'
+  /** A `$defs`/`definitions` table nothing points into any more was removed. */
+  | 'prune-defs'
+  /** An `additionalProperties` keyword was removed from the declaration. */
+  | 'drop-additional-properties'
 
 /** One keyword that changed, and what it was. */
 export interface Change {
@@ -81,6 +87,13 @@ export interface NormalizeResult {
   /** The schema to register. A fresh object graph; the input is untouched. */
   readonly schema: Node
   readonly changes: readonly Change[]
+  /**
+   * The `$ref` values this pass left in place, deduplicated, in first-seen order:
+   * external URLs, dangling pointers and cycles. A schema listed here is one the
+   * plugin could not repair on this deployment — the same reading `unknownTypes`
+   * gives for a `type` list.
+   */
+  readonly unresolvedRefs: readonly string[]
 }
 
 /** Whether a value is a plain JSON object (not null, not an array). */
@@ -164,12 +177,205 @@ function withKey(node: Node, key: string, value: unknown): Node {
 }
 
 /**
+ * A reference this plugin can follow: the whole document (`#`) or a pointer into
+ * it (`#/a/b`). A URL, a bare name or a fragment that is not a pointer is not
+ * local, and is left exactly as the server wrote it.
+ */
+const LOCAL_POINTER = /^#(\/.*)?$/
+
+/** Keywords whose value is a table of named subschemas a `$ref` may point into. */
+const DEFINITION_KEYS: readonly string[] = ['$defs', 'definitions']
+
+/**
+ * Decode one JSON Pointer segment.
+ *
+ * The fragment form of a pointer is URI-encoded as well as `~`-escaped, so both
+ * layers are undone. A malformed percent-escape cannot make this throw: the raw
+ * segment is used instead, and the pointer then simply fails to resolve.
+ * @param segment - one `~`-escaped pointer segment.
+ * @returns the property name it names.
+ */
+function decodeSegment(segment: string): string {
+  const unescaped = segment.replace(/~1/g, '/').replace(/~0/g, '~')
+  if (!unescaped.includes('%')) return unescaped
+  try {
+    return decodeURIComponent(unescaped)
+  } catch {
+    return unescaped
+  }
+}
+
+/**
+ * Resolve a local reference against the schema it appeared in.
+ *
+ * Only a `#`-rooted pointer is resolved. Everything else — an external URL, a
+ * fragment that is not a pointer, a pointer into a node that does not exist —
+ * returns `undefined`, which the caller reports rather than guesses at: an
+ * inlined node that does not match what the server meant is worse than a
+ * declaration the model can still read the way the server wrote it.
+ * @param root - the schema the reference is read against, exactly as it arrived.
+ * @param ref - the `$ref` value.
+ * @returns the node it points at, or `undefined` when this plugin cannot follow it.
+ */
+export function resolveLocalRef(root: Node, ref: string): unknown {
+  if (!LOCAL_POINTER.test(ref)) return undefined
+  const rest = ref.slice(1)
+  if (rest === '') return root
+  let cursor: unknown = root
+  for (const raw of rest.slice(1).split('/')) {
+    const key = decodeSegment(raw)
+    if (Array.isArray(cursor)) {
+      // An array index in a pointer is a decimal string, never a leading-zero or
+      // negative form, so anything else is a pointer this plugin does not follow.
+      if (!/^(?:0|[1-9]\d*)$/.test(key)) return undefined
+      const index = Number(key)
+      if (index >= cursor.length) return undefined
+      cursor = cursor[index]
+      continue
+    }
+    if (!isNode(cursor) || !Object.hasOwn(cursor, key)) return undefined
+    cursor = cursor[key]
+  }
+  return cursor
+}
+
+/** The state one narrowing pass carries beside the settings. */
+interface Env {
+  /** The schema as the server published it: every reference resolves against this. */
+  readonly root: Node
+  /**
+   * The nodes currently being expanded on this branch, by identity — the cycle
+   * test. The root starts in it: a reference back to the document is a reference
+   * into the node the expansion is already inside.
+   */
+  readonly active: Set<Node>
+  /** How many references have been expanded, against {@link MAX_REF_EXPANSIONS}. */
+  expansions: number
+}
+
+/**
+ * Every `$ref` a finished schema still carries, deduplicated, in walk order.
+ * @param node - the schema.
+ * @param depth - the recursion depth.
+ * @param found - the accumulator.
+ * @param outsideDefinitions - skip the root's `$defs`/`definitions` tables. Used
+ * for the pruning decision: whether a table is still **used** is a question about
+ * the references outside it, since a table always carries the references it was
+ * written with.
+ * @returns the references, as written.
+ */
+export function collectRefs(node: unknown, depth = 0, found: string[] = [], outsideDefinitions = false): string[] {
+  if (!isNode(node) || depth > MAX_DEPTH) return found
+  const ref = node['$ref']
+  if (typeof ref === 'string' && !found.includes(ref)) found.push(ref)
+  for (const [key, value] of Object.entries(node)) {
+    if (outsideDefinitions && depth === 0 && DEFINITION_KEYS.includes(key)) continue
+    if (Array.isArray(value)) {
+      for (const entry of value) collectRefs(entry, depth + 1, found, outsideDefinitions)
+    } else collectRefs(value, depth + 1, found, outsideDefinitions)
+  }
+  return found
+}
+
+/** How many references one schema may expand before the rest are left in place. */
+export const MAX_REF_EXPANSIONS = 512
+
+/**
+ * Expand every local reference in a schema, before any other rule runs.
+ *
+ * Cycle detection is by **node identity**, not by reference string: a reference
+ * whose target is already being expanded on this branch points back into
+ * something this pass is currently in the middle of copying, and expanding it
+ * again is what turns a self-referential schema into a document of unbounded
+ * depth. Two different pointers to the same node are therefore caught by the same
+ * test, which is the condition that actually fails to terminate.
+ * @param node - the node to expand.
+ * @param path - its path, for the change report.
+ * @param changes - the report being accumulated.
+ * @param env - the pass state.
+ * @param depth - the recursion depth, bounded by {@link MAX_DEPTH}.
+ * @returns the expanded node (a copy; the input is never mutated).
+ */
+function expandReferences(node: Node, path: string, changes: Change[], env: Env, depth: number): Node {
+  if (depth >= MAX_DEPTH) return node
+  let out: Node = node
+
+  // Children first, so a keyword written beside `$ref` is expanded before the
+  // merge below lets it override the target.
+  const child = (value: unknown, suffix: string): unknown => {
+    if (isNode(value)) return expandReferences(value, `${path}${suffix}`, changes, env, depth + 1)
+    if (Array.isArray(value)) {
+      return value.map((entry, index) =>
+        isNode(entry) ? expandReferences(entry, `${path}${suffix}/${index}`, changes, env, depth + 1) : entry)
+    }
+    return value
+  }
+  const rebuild = (key: string, value: unknown): void => {
+    if (Array.isArray(value)) {
+      const next = value.map((entry, index) =>
+        isNode(entry) ? expandReferences(entry, `${path}/${key}/${index}`, changes, env, depth + 1) : entry)
+      if (next.some((entry, index) => entry !== value[index])) out = withKey(out, key, next)
+      return
+    }
+    const next = child(value, `/${key}`)
+    if (next !== value) out = withKey(out, key, next)
+  }
+
+  for (const key of ARRAY_SCHEMA_KEYS) if (out[key] !== undefined) rebuild(key, out[key])
+  for (const key of MAP_SCHEMA_KEYS) {
+    // A definitions table is not expanded in place. Its entries reach the model
+    // through the references that point at them — which resolve against this table
+    // and are expanded where they are used — and a table this pass cannot repair
+    // (a dangling pointer, a cycle) stays exactly as the server wrote it.
+    if (DEFINITION_KEYS.includes(key)) continue
+    const value = out[key]
+    if (!isNode(value)) continue
+    let changed = false
+    const entries: Node = {}
+    for (const [name, sub] of Object.entries(value)) {
+      const next = isNode(sub) ? expandReferences(sub, `${path}/${key}/${name}`, changes, env, depth + 1) : sub
+      entries[name] = next
+      if (next !== sub) changed = true
+    }
+    if (changed) out = withKey(out, key, entries)
+  }
+  for (const key of NODE_SCHEMA_KEYS) if (out[key] !== undefined) rebuild(key, out[key])
+  for (const key of [...UNION_KEYS, 'allOf']) {
+    const value = out[key]
+    if (Array.isArray(value)) rebuild(key, value)
+  }
+
+  const ref = out['$ref']
+  if (typeof ref !== 'string') return out
+  const target = resolveLocalRef(env.root, ref)
+  // Left in place: an unfollowable reference, a cycle, or a schema that has already
+  // expanded its budget. The snapshot reports every `$ref` the final schema still
+  // carries, so none of these needs recording here.
+  if (!isNode(target) || env.active.has(target) || env.expansions >= MAX_REF_EXPANSIONS) return out
+  env.expansions += 1
+  env.active.add(target)
+  let expanded: Node
+  try {
+    expanded = expandReferences(target, `${path}/$ref`, changes, env, depth + 1)
+  } finally {
+    env.active.delete(target)
+  }
+  changes.push({ path, rule: 'inline-ref', before: ref, after: 'inlined' })
+  const merged: Node = { ...expanded }
+  for (const [key, value] of Object.entries(out)) {
+    if (key !== '$ref') merged[key] = value
+  }
+  return merged
+}
+
+/**
  * Narrow one schema node and its descendants.
  * @param node - the node.
  * @param path - its path, for the change report.
  * @param settings - the resolved settings.
  * @param changes - the report being accumulated.
  * @param depth - the recursion depth, bounded by {@link MAX_DEPTH}.
+ * @param env - the pass state.
  * @returns the narrowed node (a copy; the input is never mutated).
  */
 function visit(node: Node, path: string, settings: Settings, changes: Change[], depth: number): Node {
@@ -187,7 +393,16 @@ function visit(node: Node, path: string, settings: Settings, changes: Change[], 
     changes.push({ path, rule: 'narrow-type-list', before: [...list], after: narrowed })
   }
 
-  // 2. Recursion into the places a subschema can live.
+  // 2. `additionalProperties` is removed when asked for. Done before the recursion
+  //    so an object-valued keyword is not walked into and reported on after the
+  //    node that carried it has been deleted.
+  if (settings.additionalProperties === 'drop' && Object.hasOwn(out, 'additionalProperties')) {
+    const before = out['additionalProperties']
+    out = withKey(out, 'additionalProperties', undefined)
+    changes.push({ path: `${path}/additionalProperties`, rule: 'drop-additional-properties', before, after: undefined })
+  }
+
+  // 3. Recursion into the places a subschema can live.
   if (depth >= MAX_DEPTH) return out
   const child = (value: unknown, suffix: string): unknown => {
     if (isNode(value)) return visit(value, `${path}${suffix}`, settings, changes, depth + 1)
@@ -223,7 +438,7 @@ function visit(node: Node, path: string, settings: Settings, changes: Change[], 
     if (next !== value) out = withKey(out, key, next)
   }
 
-  // 3. Unions: drop the null branches, then merge an all-object union.
+  // 4. Unions: drop the null branches, then merge an all-object union.
   for (const key of UNION_KEYS) {
     const value = out[key]
     if (!Array.isArray(value)) continue
@@ -356,15 +571,43 @@ const UNION_KEYS: readonly string[] = ['anyOf', 'oneOf']
 export function normalizeSchema(parameters: unknown, settings: Settings): NormalizeResult | undefined {
   if (!isNode(parameters)) return undefined
   const changes: Change[] = []
+  const env: Env = { root: parameters, active: new Set([parameters]), expansions: 0 }
+  // Expansion first, so the rules below see what each reference actually declares
+  // instead of a node they cannot read into.
+  const expanded = settings.inlineRefs ? expandReferences(parameters, '#', changes, env, 0) : parameters
   // `allOf` is a union-shaped keyword for walking purposes only.
-  const schema = visit(parameters, '#', settings, changes, 0)
-  const withAllOf = { ...schema }
+  const schema = visit(expanded, '#', settings, changes, 0)
+  let withAllOf = { ...schema }
   const allOf = withAllOf['allOf']
   if (Array.isArray(allOf)) {
     withAllOf['allOf'] = allOf.map((entry, index) =>
       isNode(entry) ? visit(entry, `#/allOf/${index}`, settings, changes, 1) : entry)
   }
-  return { schema: withAllOf, changes }
+
+  // A `$defs` table is a second copy of declarations the model would otherwise
+  // read in place: with inlining on and nothing left pointing into it, it is dead
+  // weight in a declaration that has a token budget, and on the reported provider
+  // a `$defs` key in the declaration is itself rejected. Only removed when the
+  // walk left no `$ref` behind — a table something still points at is one keeping
+  // a reference resolvable.
+  if (settings.inlineRefs && collectRefs(withAllOf, 0, [], true).length === 0) {
+    for (const key of DEFINITION_KEYS) {
+      const table = withAllOf[key]
+      if (!isNode(table)) continue
+      const names = Object.keys(table)
+      withAllOf = { ...withAllOf }
+      delete withAllOf[key]
+      changes.push({ path: `#/${key}`, rule: 'prune-defs', before: names, after: undefined })
+      // The definitions were walked before this decision could be made; their
+      // per-node records describe nodes this same pass deleted, so they are
+      // dropped rather than left to look like changes that reached the model.
+      for (let index = changes.length - 2; index >= 0; index -= 1) {
+        if (changes[index]?.path.startsWith(`#/${key}/`)) changes.splice(index, 1)
+      }
+    }
+  }
+
+  return { schema: withAllOf, changes, unresolvedRefs: collectRefs(withAllOf) }
 }
 
 /** Whether a schema contains anything this plugin knows how to narrow. */

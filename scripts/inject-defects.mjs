@@ -31,7 +31,12 @@ const TSC = join(root, 'node_modules', '.bin', 'tsc')
  * the README and the probe script, none of which an arm touches — so that the
  * arms below measure behaviour and nothing else. `npm test` runs all four.
  */
-const SPECS = ['test/normalize.spec.mjs', 'test/plugin.spec.mjs', 'test/coverage.spec.mjs']
+const SPECS = [
+  'test/normalize.spec.mjs',
+  'test/plugin.spec.mjs',
+  'test/coverage.spec.mjs',
+  'test/refs.spec.mjs',
+]
 
 /** Every file an arm may touch, with its original bytes. */
 const FILES = ['src/detect.ts', 'src/config.ts', 'src/normalize.ts', 'src/normalizer.ts', 'src/index.ts']
@@ -229,6 +234,43 @@ const ARMS = [
     file: 'src/normalize.ts',
     find: '  return type.every(entry => typeof entry === \'string\') ? type as string[] : undefined',
     replace: '  return type as string[]',
+  },
+
+  {
+    id: 'normalize/inline-refs-setting-ignored',
+    file: 'src/normalize.ts',
+    find: "  const expanded = settings.inlineRefs ? expandReferences(parameters, '#', changes, env, 0) : parameters",
+    replace: "  const expanded = expandReferences(parameters, '#', changes, env, 0)",
+  },
+  {
+    id: 'normalize/cycle-guard-is-not-node-identity',
+    file: 'src/normalize.ts',
+    find: '  if (!isNode(target) || env.active.has(target) || env.expansions >= MAX_REF_EXPANSIONS) return out',
+    replace: '  if (!isNode(target) || env.expansions >= MAX_REF_EXPANSIONS) return out',
+  },
+  {
+    id: 'normalize/prune-counts-references-inside-the-table',
+    file: 'src/normalize.ts',
+    find: '  if (settings.inlineRefs && collectRefs(withAllOf, 0, [], true).length === 0) {',
+    replace: '  if (settings.inlineRefs && collectRefs(withAllOf).length === 0) {',
+  },
+  {
+    id: 'normalize/prune-recorded-but-not-applied',
+    file: 'src/normalize.ts',
+    find: '      const names = Object.keys(table)\n      withAllOf = { ...withAllOf }\n      delete withAllOf[key]',
+    replace: '      const names = Object.keys(table)\n      withAllOf = { ...withAllOf }',
+  },
+  {
+    id: 'normalize/additional-properties-posture-ignored',
+    file: 'src/normalize.ts',
+    find: "  if (settings.additionalProperties === 'drop' && Object.hasOwn(out, 'additionalProperties')) {",
+    replace: "  if (Object.hasOwn(out, 'additionalProperties')) {",
+  },
+  {
+    id: 'normalize/unresolved-refs-always-empty',
+    file: 'src/normalize.ts',
+    find: '  return { schema: withAllOf, changes, unresolvedRefs: collectRefs(withAllOf) }',
+    replace: '  return { schema: withAllOf, changes, unresolvedRefs: [] }',
   },
 
   // --- normalizer.ts -----------------------------------------------------

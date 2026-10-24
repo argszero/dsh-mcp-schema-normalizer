@@ -23,5 +23,14 @@
         # Merge an `anyOf`/`oneOf` whose remaining branches are all objects into
         # one object node. Default true.
         # mergeObjectBranches: true
+        # Replace a local `$ref` with the subschema it points at, and remove a
+        # `$defs`/`definitions` table nothing outside it points into any more.
+        # Default true. An external URL, a dangling pointer and a cycle are left
+        # as the server wrote them and named in `snapshot().unresolvedRefs`.
+        # inlineRefs: true
+        # Remove the `additionalProperties` keyword from the declaration:
+        # `drop` (default) or `keep`. On the provider that rejects the keyword a
+        # single occurrence fails every request in the session with HTTP 400.
+        # additionalProperties: drop
         # Log the mount, first-change and unmount summaries. Default true.
         # report: true

@@ -1,7 +1,7 @@
 {
   "name": "@argszero/dsh-mcp-schema-normalizer",
-  "description": "A tool parameter declared with a type list ([\"boolean\",\"string\"]), an `anyOf` or a `oneOf` is legal JSON Schema, and third-party MCP servers publish them — a code-search server declaring `anyOf [array|string, null]` on its main parameters is the reported example. A model that reduces a union to its first member (the report's is Gemini) can then never fill the parameter with the others, so a string parameter accepts only a boolean. Our own tools are ours to fix at the source; a server's `inputSchema` is not — `createMcpToolDefinition` hands it to the registry unchanged. This plugin shadows `register` on the tools service instance, the one seam a caller that reaches the registry by name lookup is seen at, and narrows a selected definition's `parameters` to one type per node before the registration is forwarded: type lists lose `null` and reduce by a preference order, `anyOf`/`oneOf` lose their null branches, and a union whose remaining branches are all objects merges into one. Arguments are never touched — the server still validates what it accepts. `observe` mode reports what `normalize` would change without changing it; the snapshot reports the rules that fired, the servers the configuration never matched, and the MCP tools that were already registered when the shadow went in. Zero runtime dependencies, fail-open, no sandbox changes.",
-  "version": "0.1.1",
+  "description": "A tool parameter declared with a type list ([\"boolean\",\"string\"]), an `anyOf` or a `oneOf` is legal JSON Schema, and third-party MCP servers publish them \u2014 a code-search server declaring `anyOf [array|string, null]` on its main parameters is the reported example. A model that reduces a union to its first member (the report's is Gemini) can then never fill the parameter with the others, so a string parameter accepts only a boolean. Our own tools are ours to fix at the source; a server's `inputSchema` is not \u2014 `createMcpToolDefinition` hands it to the registry unchanged. This plugin shadows `register` on the tools service instance, the one seam a caller that reaches the registry by name lookup is seen at, and narrows a selected definition's `parameters` to one type per node before the registration is forwarded: type lists lose `null` and reduce by a preference order, `anyOf`/`oneOf` lose their null branches, and a union whose remaining branches are all objects merges into one. Arguments are never touched \u2014 the server still validates what it accepts. It also replaces a local `$ref` with the subschema it names (pruning a `$defs` table nothing points into) and removes the `additionalProperties` keyword, because a provider that rejects either one fails the whole request before any tool is called. A `ToolDefinition` carries no validator -- the MCP server validates its own arguments -- so a rewrite here moves what the model is told, never what the server admits. `observe` mode reports what `normalize` would change without changing it; the snapshot reports the rules that fired, the servers the configuration never matched, and the MCP tools that were already registered when the shadow went in. Zero runtime dependencies, fail-open, no sandbox changes.",
+  "version": "0.2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -40,6 +40,7 @@
     "model-context-protocol",
     "tools",
     "json-schema",
+    "json-schema-ref",
     "schema-normalization",
     "gemini",
     "union-types"

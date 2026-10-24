@@ -40,6 +40,26 @@ export const MODES: readonly Mode[] = ['normalize', 'observe', 'off']
 /** The `serverName` contract `mcp-client` validates before it connects (`[A-Za-z0-9_-]{1,32}`). */
 export const SERVER_NAME = /^[A-Za-z0-9_-]{1,32}$/
 
+/**
+ * What the plugin does with an `additionalProperties` keyword in a schema it
+ * selects.
+ *
+ * Gemini rejects the keyword outright in a tool declaration
+ * (`functionDeclarations[].parameters`): one `additionalProperties: false` fails
+ * the whole request with HTTP 400 `INVALID_ARGUMENT` before any tool is called, so
+ * on that provider a server that closes its objects makes every turn of the
+ * session fail. Dropping the keyword is the only repair available to a plugin:
+ * the declaration is advisory, and nothing in this process validates a call
+ * against it (a raw `ToolDefinition` carries no validator — `defineTool` closes
+ * its own validation inside `execute`, and an MCP definition built by
+ * `createMcpToolDefinition` has none, so the server remains the only authority on
+ * what a call may carry).
+ */
+export type AdditionalPropertiesMode = 'drop' | 'keep'
+
+/** The modes, as a runtime list so validation and documentation cannot drift. */
+export const ADDITIONAL_PROPERTIES_MODES: readonly AdditionalPropertiesMode[] = ['drop', 'keep']
+
 /** The JSON Schema type names a surviving `type` list is reduced from. */
 export const TYPE_NAMES: readonly string[] = ['string', 'array', 'object', 'number', 'integer', 'boolean', 'null']
 
@@ -95,6 +115,25 @@ export interface Config {
    * honesty section, and the per-node change report, which shows it.
    */
   mergeObjectBranches?: boolean
+  /**
+   * Whether a local `$ref` (`#/$defs/Name`, `#/definitions/Name`, any `#`-rooted
+   * pointer) is replaced by the subschema it points at, and a `$defs` table that
+   * nothing points into any more is removed. Default true.
+   *
+   * Gemini reads a `$ref` in a tool declaration as a reference it cannot follow
+   * and fails the request, so a server that factors its schema through `$defs`
+   * makes every turn of the session fail on that provider. Inlining is
+   * semantics-preserving for the declaration — the model is told exactly what the
+   * pointer pointed at — and it is bounded: an external URL, a dangling pointer
+   * and a cycle are each left as the server wrote it and listed in the snapshot's
+   * `unresolvedRefs` rather than resolved on a guess.
+   */
+  inlineRefs?: boolean
+  /**
+   * What to do with an `additionalProperties` keyword; see
+   * {@link AdditionalPropertiesMode}. Default `drop`.
+   */
+  additionalProperties?: AdditionalPropertiesMode
   /** Whether the mount, first-change and unmount summaries are logged. Default true. */
   report?: boolean
 }
@@ -123,6 +162,8 @@ export interface Settings {
   readonly preferFellBack: boolean
   readonly nullBranches: boolean
   readonly mergeObjectBranches: boolean
+  readonly inlineRefs: boolean
+  readonly additionalProperties: AdditionalPropertiesMode
   readonly report: boolean
 }
 
@@ -210,6 +251,26 @@ function readBoolean(value: unknown, field: string, fallback: boolean): boolean 
 }
 
 /**
+ * The `additionalProperties` posture, validated.
+ *
+ * An unrecognised word throws instead of falling back: `keep` and `drop` are
+ * opposite repairs for the same provider, and an operator who wrote `remove`
+ * would otherwise be told the mount succeeded while the keyword that fails every
+ * request stayed in the schema.
+ * @param value - the configured value, or `undefined`.
+ * @returns the posture to use.
+ */
+function readAdditionalProperties(value: unknown): AdditionalPropertiesMode {
+  if (value === undefined) return 'drop'
+  if (typeof value !== 'string' || !ADDITIONAL_PROPERTIES_MODES.includes(value as AdditionalPropertiesMode)) {
+    throw new RangeError(
+      `mcp-schema-normalizer: additionalProperties must be one of ${ADDITIONAL_PROPERTIES_MODES.join(', ')}, got ${String(value)}`,
+    )
+  }
+  return value as AdditionalPropertiesMode
+}
+
+/**
  * Turn a loader entry's configuration into validated settings.
  *
  * Invalid values throw, which fails the mount: a normalizer whose configuration
@@ -240,6 +301,8 @@ export function normalizeConfig(config: Config = {}): Settings {
     preferFellBack: prefer.fellBack,
     nullBranches: readBoolean(config.nullBranches, 'nullBranches', true),
     mergeObjectBranches: readBoolean(config.mergeObjectBranches, 'mergeObjectBranches', true),
+    inlineRefs: readBoolean(config.inlineRefs, 'inlineRefs', true),
+    additionalProperties: readAdditionalProperties(config.additionalProperties),
     report: readBoolean(config.report, 'report', true),
   }
 }

@@ -53,10 +53,18 @@ import type { Config } from './config.ts'
 import { CHANGE_LOG_LIMIT, ToolNormalizer } from './normalizer.ts'
 import type { NormalizerSnapshot } from './normalizer.ts'
 
-export type { Config, Mode, ServerRule, Settings } from './config.ts'
-export { MODES, SERVER_NAME, TYPE_NAMES, TYPE_PREFERENCE, normalizeConfig, unmatchableReason } from './config.ts'
+export type { AdditionalPropertiesMode, Config, Mode, ServerRule, Settings } from './config.ts'
+export {
+  ADDITIONAL_PROPERTIES_MODES,
+  MODES,
+  SERVER_NAME,
+  TYPE_NAMES,
+  TYPE_PREFERENCE,
+  normalizeConfig,
+  unmatchableReason,
+} from './config.ts'
 export type { Change, NormalizeResult, Rule } from './normalize.ts'
-export { MAX_DEPTH, hasUnion, isNullBranch, normalizeSchema, unknownTypes } from './normalize.ts'
+export { MAX_DEPTH, hasUnion, isNullBranch, normalizeSchema, resolveLocalRef, unknownTypes } from './normalize.ts'
 export type { ChangeLog, Counters, Coverage, NormalizerSnapshot, Sink, Verdict } from './normalizer.ts'
 export { CHANGE_LOG_LIMIT, EVERY_MCP_TOOL, NOT_SELECTED, ToolNormalizer } from './normalizer.ts'
 export type { ServerMatch } from './detect.ts'

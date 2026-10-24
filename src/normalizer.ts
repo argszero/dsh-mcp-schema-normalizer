@@ -84,6 +84,12 @@ export interface NormalizerSnapshot {
   readonly coverage: Coverage
   /** Type names seen in a `type` list that are not JSON Schema types. */
   readonly unknownTypes: readonly string[]
+  /**
+   * `$ref` values this plugin could not follow — external URLs, dangling
+   * pointers, cycles — in first-seen order. A non-empty list says the declaration
+   * still carries a reference the reported provider rejects, and names it.
+   */
+  readonly unresolvedRefs: readonly string[]
   /** Whether a configured `prefer` order was discarded for naming no usable type. */
   readonly preferFellBack: boolean
 }
@@ -98,7 +104,15 @@ export interface Sink {
 }
 
 /** The rules, as a runtime list so the counter object cannot drift from the type. */
-const RULES: readonly Rule[] = ['narrow-type-list', 'drop-null-branch', 'drop-empty-union', 'merge-object-branches']
+const RULES: readonly Rule[] = [
+  'narrow-type-list',
+  'drop-null-branch',
+  'drop-empty-union',
+  'merge-object-branches',
+  'inline-ref',
+  'prune-defs',
+  'drop-additional-properties',
+]
 
 /** The `parameters` of a definition, when it has one. */
 function parametersOf(definition: unknown): unknown {
@@ -151,6 +165,7 @@ export class ToolNormalizer {
   private readonly perServer = new Map<string, number>()
   private preExisting: string[] = []
   private readonly unknownTypeNames: string[] = []
+  private readonly unresolvedRefs: string[] = []
   private unionUnchanged = 0
   private reported = false
 
@@ -206,6 +221,9 @@ export class ToolNormalizer {
     for (const entry of unknownTypes(parameters)) {
       if (!this.unknownTypeNames.includes(entry)) this.unknownTypeNames.push(entry)
     }
+    for (const entry of result.unresolvedRefs) {
+      if (!this.unresolvedRefs.includes(entry)) this.unresolvedRefs.push(entry)
+    }
     if (result.changes.length === 0) {
       this.counts.unchanged += 1
       if (hasUnion(parameters)) this.unionUnchanged += 1
@@ -243,6 +261,7 @@ export class ToolNormalizer {
     this.dropped = 0
     this.unionUnchanged = 0
     this.unknownTypeNames.length = 0
+    this.unresolvedRefs.length = 0
     for (const key of this.perServer.keys()) this.perServer.set(key, 0)
   }
 
@@ -274,6 +293,7 @@ export class ToolNormalizer {
         serverLimited: this.settings.servers.length > 0,
       },
       unknownTypes: [...this.unknownTypeNames],
+      unresolvedRefs: [...this.unresolvedRefs],
       preferFellBack: this.settings.preferFellBack,
     }
   }
@@ -286,6 +306,8 @@ export class ToolNormalizer {
     const rules = [
       this.settings.nullBranches ? 'null members dropped' : 'null members kept',
       this.settings.mergeObjectBranches ? 'object unions merged' : 'object unions kept',
+      this.settings.inlineRefs ? 'local $refs inlined' : 'local $refs kept',
+      this.settings.additionalProperties === 'drop' ? 'additionalProperties dropped' : 'additionalProperties kept',
     ]
     return `selecting ${basis}; ${rules.join(', ')}; preference ${this.settings.prefer.join(' > ')}`
   }

@@ -124,16 +124,20 @@ test('the merge keeps required only where every branch required it', () => {
 })
 
 test('the merge keeps additionalProperties only when every branch agreed on it', () => {
+  // Pinned under `additionalProperties: 'keep'`: with the default `drop` the
+  // keyword never survives to be observed, and this test is about the merge's own
+  // decision — a decision that still matters for a deployment that keeps it.
+  const keep = { additionalProperties: 'keep' }
   // The branches disagree (one says false, one says nothing), so the merge
   // cannot lift a value out of them and the node gets none.
-  assert.equal(out({ anyOf: [{ type: 'object', additionalProperties: false }, { type: 'object' }] }).additionalProperties, undefined)
+  assert.equal(out({ anyOf: [{ type: 'object', additionalProperties: false }, { type: 'object' }] }, keep).additionalProperties, undefined)
   const agreed = out({
     anyOf: [{ type: 'object', additionalProperties: false }, { type: 'object', additionalProperties: false }],
-  })
+  }, keep)
   assert.equal(agreed.additionalProperties, false)
   // A keyword the surrounding node already carried is not the merge's to
   // remove: the merge only decides what to lift *out of* the branches.
-  const nodeOwn = out({ anyOf: [{ type: 'object' }, { type: 'object' }], additionalProperties: false })
+  const nodeOwn = out({ anyOf: [{ type: 'object' }, { type: 'object' }], additionalProperties: false }, keep)
   assert.equal(nodeOwn.additionalProperties, false)
 })
 
@@ -155,13 +159,16 @@ test('an object branch is recognized by its properties when it declares no type'
 })
 
 test('nested unions are reached wherever a subschema lives', () => {
+  // Pinned under the two postures that keep `$defs` and `additionalProperties` in
+  // place: pruning an unreferenced table and dropping the keyword are rules of
+  // their own (test/refs.spec.mjs), and this test is about where narrowing reaches.
   const result = out({
     type: 'object',
     properties: { q: { type: ['array', 'string', 'null'] } },
     items: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     $defs: { inner: { type: ['boolean', 'string'] } },
     additionalProperties: { type: ['integer', 'string'] },
-  })
+  }, { inlineRefs: false, additionalProperties: 'keep' })
   assert.deepEqual(result.properties.q, { type: 'string' })
   assert.deepEqual(result.items, { anyOf: [{ type: 'string' }] })
   assert.deepEqual(result.$defs.inner, { type: 'string' })
