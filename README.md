@@ -104,16 +104,14 @@ below.** It installs — its peers admit the `0.2.1` line — but the build insi
 that tarball carries only the four union rules: `inline-ref`, `prune-defs` and
 `drop-additional-properties` are not in it, and those three are what the reported
 provider rejection is about (read from the `0.1.1` tarball's own `lib/normalize.js`,
-2 October-2026 publishing). The git spec above is `0.2.0`, the version this
+2 October-2026 publishing). The git spec above is `0.2.1`, the version this
 README describes.
 
-A `github:` install builds the package in `prepare`, and pnpm blocks that build
-until the exact key it prints is allowed: the first run stops with
-`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`. Paste the printed key under
-`allowBuilds` in the profile's `pnpm-workspace.yaml` and re-run — that second run
-is the install. (Before this, the package declared no `prepare` at all while
-`lib/` sits in `.gitignore`, so a git install produced a `main` that did not
-exist.)
+That is the whole install: the build ships in the repository, so there is nothing
+to compile and no configuration to edit. Earlier versions built in `prepare`,
+which pnpm gates behind an `allowBuilds` key pinned to the resolved URL *and* the
+commit — so every later commit here invalidated a consumer's profile config, and a
+stable key was refused — and that route is no longer offered.
 
 The package declares `dsh.bundle`, so `dsh` also appends it to
 `dsh.profile.bundles` and the row activates on the next boot. **List the
